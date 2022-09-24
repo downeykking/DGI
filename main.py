@@ -3,19 +3,17 @@ import torch_geometric.transforms as T
 
 import torch.nn as nn
 
-from tqdm import tqdm
 from torch.optim import Adam
-from torch_geometric.nn import GCNConv, GINConv
+from torch_geometric.nn import GCNConv
 from torch_geometric.nn.inits import uniform
 from torch_geometric.datasets import Planetoid
 
 import os
-from loss import JSD, InfoNCE
+from loss import JSD
 import numpy as np
 
 from model import SingleBranchContrast
-from eval import get_split, LREvaluator
-from evaluate_embedding import evaluate_embedding
+from evaluate_embed import from_predefined_split, LREvaluator
 from torch_geometric import seed_everything
 
 
@@ -57,16 +55,14 @@ class Encoder(torch.nn.Module):
         return z, g, zn
 
     def get_embeddings(self, data):
-        device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
         emb = []
         y = []
         with torch.no_grad():
-            data = data.to(device)
             z, _, _ = self.forward(data.x, data.edge_index)
-            emb.append(z.cpu().numpy())
-            y.append(data.y.cpu().numpy())
-        emb = np.concatenate(emb, 0)
-        y = np.concatenate(y, 0)
+            emb.append(z.cpu())
+            y.append(data.y.cpu())
+        emb = torch.cat(emb, dim=0)
+        y = torch.cat(y, dim=0)
         return emb, y
 
 
@@ -79,14 +75,6 @@ def train(encoder_model, contrast_model, data, criterion, optimizer):
     loss.backward()
     optimizer.step()
     return loss.item()
-
-
-def test(encoder_model, data):
-    encoder_model.eval()
-    z, _, _ = encoder_model(data.x, data.edge_index)
-    split = get_split(num_samples=z.size()[0], train_ratio=0.1, test_ratio=0.8)
-    result = LREvaluator()(z, data.y, split)
-    return result
 
 
 def main():
@@ -120,7 +108,7 @@ def main():
             best_loss = loss
             best_t = epoch
             cnt_wait = 0
-            torch.save(encoder_model.state_dict(), 'best_dgi.pkl')
+            torch.save(encoder_model.state_dict(), './best_dgi.pkl')
         else:
             cnt_wait += 1
 
@@ -129,11 +117,14 @@ def main():
             break
 
     print('Loading {}th epoch'.format(best_t))
-    encoder_model.load_state_dict(torch.load('best_dgi.pkl'))
+    encoder_model.load_state_dict(torch.load('./best_dgi.pkl'))
 
     embeds, y = encoder_model.get_embeddings(data)
-    leg_mean, leg_std = evaluate_embedding(embeds, y, 10)
+    split = from_predefined_split(data)
+    result = LREvaluator(device=device)(embeds, y, split)
+    leg_mean, leg_std = np.mean(result['acc']), np.std(result['acc'])
     print(f'leg mean: {leg_mean:.4f}, leg std: {leg_std:.4f}')
+
 
 if __name__ == '__main__':
     main()
